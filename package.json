@@ -1,0 +1,21 @@
+{
+  "name": "consumable-api",
+  "version": "1.0.0",
+  "description": "Food Delivery Market consumable REST API",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "lint": "node scripts/check-syntax.js && node --test \"tests/**/*.test.js\"",
+    "test": "node --test \"tests/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^9.9.0",
+    "express": "^4.21.2"
+  }
+}

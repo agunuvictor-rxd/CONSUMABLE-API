@@ -1,0 +1,25 @@
+{
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "pagination": {
+    "defaultLimit": 20,
+    "maxLimit": 100,
+    "defaultOffset": 0
+  },
+  "rateLimit": {
+    "windowMs": 60000,
+    "max": 100,
+    "message": "Too many requests, please try again later."
+  },
+  "seed": {
+    "counts": {
+      "restaurants": 150,
+      "menuItemsPerRestaurant": 4,
+      "orders": 300,
+      "orderItemsPerOrderMin": 1,
+      "orderItemsPerOrderMax": 4
+    }
+  }
+}

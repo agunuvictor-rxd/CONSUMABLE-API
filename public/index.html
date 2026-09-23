@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Consumable API — Food Delivery Market</title>
+    <style>
+      :root {
+        --brand: #e23744;
+        --bg: #fff9f6;
+        --card: #ffffff;
+        --ink: #1f2430;
+        --muted: #6b7380;
+        --line: #ece4e0;
+        --accent: #2f6fed;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header {
+        background: var(--brand);
+        color: #fff;
+        padding: 20px 24px;
+      }
+      header h1 { margin: 0; font-size: 20px; }
+      header p { margin: 4px 0 0; font-size: 13px; opacity: 0.9; }
+      main { max-width: 860px; margin: 0 auto; padding: 24px; }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 18px;
+      }
+      label { font-size: 14px; font-weight: 600; }
+      select, button, input {
+        font: inherit;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: var(--card);
+      }
+      button {
+        cursor: pointer;
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        font-weight: 600;
+      }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      .summary { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+      }
+      .card h3 { margin: 0 0 6px; font-size: 16px; }
+      .card .meta { font-size: 13px; color: var(--muted); }
+      .card .tags { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+      .tag {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #f4ece7;
+        color: #6b553f;
+      }
+      .tag.rating { background: #eaf3ff; color: var(--accent); }
+      .tag.open { background: #e8f7ee; color: #1c7c3d; }
+      .tag.closed { background: #fdecec; color: #b3261e; }
+      .paging { display: flex; gap: 10px; align-items: center; margin-top: 20px; }
+      .error { color: #b3261e; font-size: 14px; margin-top: 12px; font-weight: 600; }
+      .code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Consumable API — Food Delivery Market</h1>
+      <p>API base: <span class="code" id="apiBase"></span></p>
+    </header>
+
+    <main>
+      <section class="toolbar">
+        <label for="cuisineFilter">Cuisine</label>
+        <select id="cuisineFilter">
+          <option value="">All cuisines</option>
+        </select>
+
+        <button id="prevBtn" type="button">Previous</button>
+        <button id="nextBtn" type="button">Next page</button>
+      </section>
+
+      <p class="summary" id="summary">Loading…</p>
+      <div class="grid" id="list"></div>
+      <p class="error" id="error" hidden></p>
+      <div class="paging"></div>
+    </main>
+
+    <script>
+      const base = (window.__API_BASE_URL__ || '').replace(/\/+$/, '');
+      const endpoint = `${base}/api/v1/restaurants`;
+      const resultsPerPage = 50;
+
+      const state = {
+        offset: 0,
+        cuisine: '',
+        total: 0,
+        unknownCuisines: new Set(),
+      };
+
+      const cuisineFilter = document.getElementById('cuisineFilter');
+      const listEl = document.getElementById('list');
+      const summaryEl = document.getElementById('summary');
+      const errorEl = document.getElementById('error');
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+
+      document.getElementById('apiBase').textContent = endpoint;
+
+      function render(data) {
+        listEl.innerHTML = '';
+        if (data.length === 0) {
+          listEl.innerHTML = '<p class="summary">No restaurants match.</p>';
+          return;
+        }
+        for (const r of data) {
+          if (r.cuisine) state.unknownCuisines.add(r.cuisine);
+          const card = document.createElement('article');
+          card.className = 'card';
+          card.innerHTML = `
+            <h3>${esc(r.name)}</h3>
+            <p class="meta">${esc(r.cuisine)} · ${esc(r.city)}, ${esc(r.country)}</p>
+            <div class="tags">
+              <span class="tag rating">★ ${Number(r.rating).toFixed(1)}</span>
+              <span class="tag">${'$'.repeat(r.price_range)}</span>
+              <span class="tag ${r.is_open ? 'open' : 'closed'}">${r.is_open ? 'Open' : 'Closed'}</span>
+            </div>`;
+          listEl.appendChild(card);
+        }
+      }
+
+      function refreshCuisineOptions() {
+        const current = state.cuisine;
+        const options = [...state.unknownCuisines].sort();
+        cuisineFilter.innerHTML = `<option value="">All cuisines</option>` +
+          options.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+        cuisineFilter.value = current;
+      }
+
+      function esc(value) {
+        return String(value).replace(/[&<>"']/g, (c) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[c]));
+      }
+
+      async function load() {
+        errorEl.hidden = true;
+        prevBtn.disabled = nextBtn.disabled = true;
+        const params = new URLSearchParams({
+          limit: String(resultsPerPage),
+          offset: String(state.offset),
+          sort: 'name',
+          order: 'asc',
+        });
+        if (state.cuisine) params.set('cuisine', state.cuisine);
+
+        try {
+          const res = await fetch(`${endpoint}?${params}`);
+          const body = await res.json();
+          if (!res.ok) {
+            throw new Error(body?.error?.message || `HTTP ${res.status}`);
+          }
+          state.total = body.meta.total;
+          render(body.data);
+          refreshCuisineOptions();
+          summaryEl.textContent =
+            `Showing ${body.data.length} of ${state.total} restaurants (limit=${body.meta.limit}, ` +
+            `offset=${body.meta.offset}, hasMore=${body.meta.hasMore})`;
+          prevBtn.disabled = state.offset <= 0;
+          nextBtn.disabled = !body.meta.hasMore;
+        } catch (err) {
+          errorEl.hidden = false;
+          errorEl.textContent = `Failed to load: ${err.message}`;
+        }
+      }
+
+      cuisineFilter.addEventListener('change', () => {
+        state.cuisine = cuisineFilter.value;
+        state.offset = 0;
+        load();
+      });
+
+      prevBtn.addEventListener('click', () => {
+        if (state.offset >= resultsPerPage) state.offset -= resultsPerPage;
+        load();
+      });
+
+      nextBtn.addEventListener('click', () => {
+        state.offset += resultsPerPage;
+        load();
+      });
+
+      load();
+    </script>
+  </body>
+</html>
