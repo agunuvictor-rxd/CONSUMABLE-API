@@ -1,5 +1,6 @@
 export function round2(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return 0;
-  return Number(numeric.toFixed(2));
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new TypeError(`round2 expected a finite number, received: ${String(value)}`);
+  }
+  return Number(value.toFixed(2));
 }

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../db.js';
+import { config } from '../config.js';
 import { ApiError } from '../errors.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import {
@@ -124,7 +125,7 @@ router.post(
     const body = assertBodyObject(req);
     requireFields(body, ['restaurant_id', 'name', 'price']);
     assertTypes(body, TYPE_SPEC);
-    assertRanges(body, { price: { min: 0 } });
+    assertRanges(body, { price: { min: 0, max: config.limits.maxPrice } });
     rejectUnknownFields(body, CREATE_FIELDS);
     assertRestaurantExists(body.restaurant_id);
     res.status(201).json({ data: toMenuItemDto(insertMenuItem({ restaurantId: body.restaurant_id, body })) });
@@ -146,7 +147,7 @@ router.patch(
     rejectUnknownFields(body, UPDATE_FIELDS);
     requireAtLeastOneField(body, UPDATE_FIELDS);
     assertTypes(body, TYPE_SPEC);
-    assertRanges(body, { price: { min: 0 } });
+    assertRanges(body, { price: { min: 0, max: config.limits.maxPrice } });
 
     const data = { ...body };
     if (typeof data.name === 'string') data.name = data.name.trim();

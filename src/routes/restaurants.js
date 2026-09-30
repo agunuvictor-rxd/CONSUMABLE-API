@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../db.js';
+import { config } from '../config.js';
 import { ApiError } from '../errors.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { toMenuItemDto, insertMenuItem } from './menuItems.js';
@@ -239,7 +240,7 @@ router.post(
       price: 'number',
       is_available: 'boolean',
     });
-    assertRanges(body, { price: { min: 0 } });
+    assertRanges(body, { price: { min: 0, max: config.limits.maxPrice } });
     rejectUnknownFields(body, ['name', 'description', 'category', 'price', 'is_available']);
     if (body.restaurant_id !== undefined) {
       throw ApiError.badRequest('Field "restaurant_id" must not be set on a nested create');

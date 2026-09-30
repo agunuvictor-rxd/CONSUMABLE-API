@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../db.js';
+import { config } from '../config.js';
 import { ApiError } from '../errors.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import {
@@ -147,7 +148,7 @@ function validateItemsArray(body) {
     }
     requireFields(entry, ['menu_item_id', 'quantity']);
     assertTypes(entry, { menu_item_id: 'string', quantity: 'integer' });
-    assertRanges(entry, { quantity: { min: 1 } });
+    assertRanges(entry, { quantity: { min: 1, max: config.limits.maxItemQuantity } });
     rejectUnknownFields(entry, ['menu_item_id', 'quantity']);
   }
   return body.items;
@@ -214,7 +215,7 @@ export function validateOrderCreateBody(body, { nested }) {
     items: 'array',
   });
   assertEnum(body, 'status', ORDER_STATUSES);
-  assertRanges(body, { delivery_fee: { min: 0 } });
+  assertRanges(body, { delivery_fee: { min: 0, max: config.limits.maxDeliveryFee } });
   rejectUnknownFields(body, nested ? NESTED_ORDER_CREATE_FIELDS : ORDER_CREATE_FIELDS);
   if (!nested && !isUuid(body.restaurant_id)) {
     throw ApiError.badRequest('Field "restaurant_id" must be a valid UUID');
@@ -348,7 +349,7 @@ router.post(
     const body = assertBodyObject(req);
     requireFields(body, ['menu_item_id', 'quantity']);
     assertTypes(body, { menu_item_id: 'string', quantity: 'integer' });
-    assertRanges(body, { quantity: { min: 1 } });
+    assertRanges(body, { quantity: { min: 1, max: config.limits.maxItemQuantity } });
     rejectUnknownFields(body, ['menu_item_id', 'quantity']);
     assertOrderItemBelongsToRestaurant(body.menu_item_id, order.restaurant_id);
 
@@ -401,7 +402,7 @@ router.patch(
     rejectUnknownFields(body, ['quantity']);
     requireAtLeastOneField(body, ['quantity']);
     assertTypes(body, { quantity: 'integer' });
-    assertRanges(body, { quantity: { min: 1 } });
+    assertRanges(body, { quantity: { min: 1, max: config.limits.maxItemQuantity } });
 
     const db = getDb();
     const existing = db

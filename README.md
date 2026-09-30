@@ -29,6 +29,9 @@ Open http://localhost:3000 to view the consumer frontend, or hit the API at
 | `DEFAULT_PAGE_LIMIT`| `20`                         | Pagination default limit                                 |
 | `MAX_PAGE_LIMIT`    | `100`                        | Pagination hard cap                                      |
 | `RATE_LIMIT_MAX`    | `100`                        | Requests per IP per `60s` window                         |
+| `MAX_PRICE`         | `1000000` (from config file) | Upper bound for a menu-item price                        |
+| `MAX_ITEM_QUANTITY` | `1000` (from config file)    | Upper bound for an order line quantity                   |
+| `MAX_DELIVERY_FEE`  | `1000` (from config file)    | Upper bound for an order delivery fee                    |
 
 ## Configuration file
 
@@ -39,6 +42,7 @@ Rate-limit and pagination defaults live in
 {
   "pagination": { "defaultLimit": 20, "maxLimit": 100 },
   "rateLimit":   { "windowMs": 60000, "max": 100 },
+  "limits":      { "maxPrice": 1000000, "maxItemQuantity": 1000, "maxDeliveryFee": 1000 },
   "seed":        { "counts": { "restaurants": 150, "menuItemsPerRestaurant": 4, "orders": 300 } }
 }
 ```
@@ -136,6 +140,13 @@ A menu item may appear **at most once** on a given order:
 places, so sums such as `0.1 + 0.2` are exposed as `0.3`, never as
 `0.30000000000000004`.
 
+Rounding **throws** on a non-finite input rather than coercing it to `0` —
+silently turning a bad number into a zero price would corrupt an order
+unnoticed. Magnitudes are therefore also bounded at validation time
+(`limits` in `config/app.config.json`): a `price`, `quantity`, or `delivery_fee`
+above its maximum is rejected with `400 BAD_REQUEST` before any arithmetic runs,
+so an overflowing product is rejected at the edge instead of failing mid-write.
+
 ### Order status transitions
 
 `PATCH /orders/:id` validates the requested status against a state machine and
@@ -171,8 +182,9 @@ dropdown**, and a **"Next page"** pagination button, and shows
 npm test     # node --test
 ```
 
-24 tests cover envelopes, pagination, filtering, sorting, 400/404/409/422/429
+26 tests cover envelopes, pagination, filtering, sorting, 400/404/409/422/429
 status codes, nested resources, totals computation, `Retry-After`, and seed
 idempotency (running the seed twice produces identical counts). They also lock in
-money rounding, duplicate order-line merging, the order status state machine, and
-the nested `POST /restaurants/:id/orders` route.
+money rounding, duplicate order-line merging, the order status state machine, the
+nested `POST /restaurants/:id/orders` route, and rejection of non-finite or
+out-of-range monetary input.

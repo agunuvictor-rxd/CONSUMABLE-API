@@ -26,6 +26,9 @@ function loadConfig() {
   const defaultLimit = intFromEnv('DEFAULT_PAGE_LIMIT', file.pagination.defaultLimit);
   const maxLimit = intFromEnv('MAX_PAGE_LIMIT', file.pagination.maxLimit);
   const rateLimitMax = intFromEnv('RATE_LIMIT_MAX', file.rateLimit.max);
+  const maxPrice = intFromEnv('MAX_PRICE', file.limits.maxPrice);
+  const maxItemQuantity = intFromEnv('MAX_ITEM_QUANTITY', file.limits.maxItemQuantity);
+  const maxDeliveryFee = intFromEnv('MAX_DELIVERY_FEE', file.limits.maxDeliveryFee);
 
   if (defaultLimit > maxLimit) {
     throw new Error('pagination.defaultLimit cannot exceed pagination.maxLimit');
@@ -54,6 +57,7 @@ function loadConfig() {
       max: rateLimitMax,
       message: file.rateLimit.message,
     },
+    limits: { maxPrice, maxItemQuantity, maxDeliveryFee },
     seed: file.seed,
   };
 }

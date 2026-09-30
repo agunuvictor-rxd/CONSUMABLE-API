@@ -13,6 +13,11 @@
     "max": 100,
     "message": "Too many requests, please try again later."
   },
+  "limits": {
+    "maxPrice": 1000000,
+    "maxItemQuantity": 1000,
+    "maxDeliveryFee": 1000
+  },
   "seed": {
     "counts": {
       "restaurants": 150,

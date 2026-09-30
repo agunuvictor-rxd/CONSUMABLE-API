@@ -15,6 +15,7 @@ const { createApp } = await import('../src/app.js');
 const { resetRateLimiter } = await import('../src/middleware/rateLimiter.js');
 const { getDb } = await import('../src/db.js');
 const { runSeed } = await import('../scripts/seed.js');
+const { round2 } = await import('../src/utils/money.js');
 
 let server;
 let baseUrl;
@@ -424,6 +425,74 @@ test('nested POST /restaurants/:id/orders creates an order', async () => {
     body: JSON.stringify({}),
   });
   assert.equal(missingName.status, 422);
+});
+
+test('round2 throws on non-finite input instead of returning 0', () => {
+  assert.equal(round2(0), 0);
+  assert.equal(round2(19.99), 19.99);
+  assert.equal(round2(10 / 3), 3.33);
+  assert.equal(round2(0.1 + 0.2), 0.3);
+
+  assert.throws(() => round2(Infinity), TypeError);
+  assert.throws(() => round2(-Infinity), TypeError);
+  assert.throws(() => round2(NaN), TypeError);
+  assert.throws(() => round2(undefined), TypeError);
+  assert.throws(() => round2(null), TypeError);
+  assert.throws(() => round2('12.5'), TypeError);
+});
+
+test('out-of-range money and quantity values are rejected with 400', async () => {
+  const restaurant = await api('/api/v1/restaurants', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Bounds Cafe', cuisine: 'Test', city: 'Berlin', country: 'Germany' }),
+  });
+  const restaurantId = restaurant.body.data.id;
+
+  const hugePrice = await api(`/api/v1/restaurants/${restaurantId}/menu-items`, {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Overflow Plate', price: 1e308, category: 'mains' }),
+  });
+  assert.equal(hugePrice.status, 400);
+  assert.equal(hugePrice.body.error.code, 'BAD_REQUEST');
+
+  const item = await api(`/api/v1/restaurants/${restaurantId}/menu-items`, {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Bounded Plate', price: 12.5, category: 'mains' }),
+  });
+  assert.equal(item.status, 201);
+
+  const hugeQuantity = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Bounds Probe',
+      items: [{ menu_item_id: item.body.data.id, quantity: 1e308 }],
+    }),
+  });
+  assert.equal(hugeQuantity.status, 400);
+  assert.equal(hugeQuantity.body.error.code, 'BAD_REQUEST');
+
+  const hugeFee = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Bounds Probe',
+      delivery_fee: 1e308,
+      items: [{ menu_item_id: item.body.data.id, quantity: 1 }],
+    }),
+  });
+  assert.equal(hugeFee.status, 400);
+
+  const accepted = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Bounds Probe',
+      items: [{ menu_item_id: item.body.data.id, quantity: 2 }],
+    }),
+  });
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.body.data.subtotal, 25);
 });
 
 test('rate limiting returns 429 with Retry-After', async () => {
