@@ -13,11 +13,21 @@ import {
 } from '../middleware/validate.js';
 import { parseListQuery, buildMeta } from '../utils/query.js';
 import { isUuid, randomUuid } from '../utils/ids.js';
+import { round2 } from '../utils/money.js';
 import { fetchPage, applyUpdate, nowIso } from '../repositories/common.js';
 
 const router = Router({ mergeParams: true });
 
 const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
+
+export const ORDER_STATUS_TRANSITIONS = {
+  pending: ['confirmed', 'cancelled'],
+  confirmed: ['preparing', 'cancelled'],
+  preparing: ['out_for_delivery', 'cancelled'],
+  out_for_delivery: ['delivered', 'cancelled'],
+  delivered: [],
+  cancelled: [],
+};
 
 const ORDERS_FILTERS = {
   status: { column: 'status', type: 'enum', values: ORDER_STATUSES },
@@ -31,6 +41,7 @@ const ORDERS_FILTERS = {
 const ORDERS_SORTABLE = ['placed_at', 'subtotal', 'total', 'status', 'customer_name', 'created_at', 'updated_at'];
 
 const ORDER_CREATE_FIELDS = ['restaurant_id', 'customer_name', 'status', 'delivery_fee', 'notes', 'items'];
+const NESTED_ORDER_CREATE_FIELDS = ORDER_CREATE_FIELDS.filter((field) => field !== 'restaurant_id');
 const ORDER_UPDATE_FIELDS = ['status', 'customer_name', 'notes'];
 
 const ITEMS_FILTERS = {
@@ -49,7 +60,7 @@ export function loadOrder(id) {
   return row;
 }
 
-function toOrderDto(row) {
+export function toOrderDto(row) {
   return {
     id: row.id,
     restaurant_id: row.restaurant_id,
@@ -84,8 +95,8 @@ function recalcOrderTotals(db, orderId, recomputeSubtotal = true) {
   const itemRow = db
     .prepare(`SELECT COALESCE(SUM(line_total), 0) AS s FROM order_items WHERE order_id = ?`)
     .get(orderId);
-  const subtotal = recomputeSubtotal ? Number(itemRow.s) : order.subtotal;
-  const total = subtotal + order.delivery_fee;
+  const subtotal = recomputeSubtotal ? round2(itemRow.s) : order.subtotal;
+  const total = round2(subtotal + order.delivery_fee);
   db.prepare(`UPDATE orders SET subtotal = ?, total = ?, updated_at = ? WHERE id = ?`).run(
     subtotal,
     total,
@@ -105,7 +116,7 @@ function insertOrderItem(db, { orderId, body, allowPatch }) {
   if (!item) {
     throw ApiError.validation('Field "menu_item_id" does not reference an existing menu item');
   }
-  const lineTotal = Number((Number(body.quantity) * Number(item.price)).toFixed(2));
+  const lineTotal = round2(Number(body.quantity) * Number(item.price));
   db.prepare(
     `INSERT INTO order_items (id, order_id, menu_item_id, item_name, quantity, unit_price, line_total, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -142,6 +153,31 @@ function validateItemsArray(body) {
   return body.items;
 }
 
+function mergeDuplicateItems(items) {
+  const merged = new Map();
+  for (const entry of items) {
+    const existing = merged.get(entry.menu_item_id);
+    if (existing) {
+      existing.quantity += entry.quantity;
+    } else {
+      merged.set(entry.menu_item_id, { ...entry });
+    }
+  }
+  return [...merged.values()];
+}
+
+function assertStatusTransition(currentStatus, nextStatus) {
+  if (currentStatus === nextStatus) return;
+  const allowed = ORDER_STATUS_TRANSITIONS[currentStatus] ?? [];
+  if (!allowed.includes(nextStatus)) {
+    throw ApiError.conflict(
+      `Cannot change order status from "${currentStatus}" to "${nextStatus}". Allowed: ${
+        allowed.length ? allowed.join(', ') : 'none (terminal status)'
+      }`,
+    );
+  }
+}
+
 router.get(
   '/',
   asyncHandler((req, res) => {
@@ -167,69 +203,76 @@ router.get(
   }),
 );
 
+export function validateOrderCreateBody(body, { nested }) {
+  requireFields(body, nested ? ['customer_name'] : ['restaurant_id', 'customer_name']);
+  assertTypes(body, {
+    restaurant_id: 'string',
+    customer_name: 'string',
+    status: 'string',
+    delivery_fee: 'number',
+    notes: 'text',
+    items: 'array',
+  });
+  assertEnum(body, 'status', ORDER_STATUSES);
+  assertRanges(body, { delivery_fee: { min: 0 } });
+  rejectUnknownFields(body, nested ? NESTED_ORDER_CREATE_FIELDS : ORDER_CREATE_FIELDS);
+  if (!nested && !isUuid(body.restaurant_id)) {
+    throw ApiError.badRequest('Field "restaurant_id" must be a valid UUID');
+  }
+}
+
+export function createOrder({ restaurantId, body }) {
+  const items = mergeDuplicateItems(validateItemsArray(body));
+  const db = getDb();
+
+  const restaurant = db.prepare(`SELECT id FROM restaurants WHERE id = ?`).get(restaurantId);
+  if (!restaurant) {
+    throw ApiError.validation('Field "restaurant_id" does not reference an existing restaurant');
+  }
+  for (const item of items) {
+    assertOrderItemBelongsToRestaurant(item.menu_item_id, restaurant.id);
+  }
+
+  const id = randomUuid();
+  const timestamp = nowIso();
+  const deliveryFee = body.delivery_fee ?? 3.49;
+
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      `INSERT INTO orders (id, restaurant_id, customer_name, status, subtotal, delivery_fee, total, notes, placed_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      restaurantId,
+      body.customer_name.trim(),
+      body.status ?? 'pending',
+      deliveryFee,
+      body.notes ?? '',
+      timestamp,
+      timestamp,
+      timestamp,
+    );
+
+    for (const item of items) {
+      insertOrderItem(db, { orderId: id, body: { ...item, order_id: id }, allowPatch: true });
+    }
+    recalcOrderTotals(db, id, items.length > 0);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return db.prepare(`SELECT * FROM orders WHERE id = ?`).get(id);
+}
+
 router.post(
   '/',
   asyncHandler((req, res) => {
     const body = assertBodyObject(req);
-    requireFields(body, ['restaurant_id', 'customer_name']);
-    assertTypes(body, {
-      restaurant_id: 'string',
-      customer_name: 'string',
-      status: 'string',
-      delivery_fee: 'number',
-      notes: 'text',
-      items: 'array',
-    });
-    assertEnum(body, 'status', ORDER_STATUSES);
-    assertRanges(body, { delivery_fee: { min: 0 } });
-    rejectUnknownFields(body, ORDER_CREATE_FIELDS);
-    if (!isUuid(body.restaurant_id)) {
-      throw ApiError.badRequest('Field "restaurant_id" must be a valid UUID');
-    }
-    const items = validateItemsArray(body);
-
-    const db = getDb();
-    const restaurant = db.prepare(`SELECT id FROM restaurants WHERE id = ?`).get(body.restaurant_id);
-    if (!restaurant) {
-      throw ApiError.validation('Field "restaurant_id" does not reference an existing restaurant');
-    }
-    for (const item of items) {
-      assertOrderItemBelongsToRestaurant(item.menu_item_id, restaurant.id);
-    }
-
-    const id = randomUuid();
-    const timestamp = nowIso();
-    const placedAt = timestamp;
-    const deliveryFee = body.delivery_fee ?? 3.49;
-
-    db.exec('BEGIN');
-    try {
-      db.prepare(
-        `INSERT INTO orders (id, restaurant_id, customer_name, status, subtotal, delivery_fee, total, notes, placed_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?)`,
-      ).run(
-        id,
-        body.restaurant_id,
-        body.customer_name.trim(),
-        body.status ?? 'pending',
-        deliveryFee,
-        body.notes ?? '',
-        placedAt,
-        timestamp,
-        timestamp,
-      );
-
-      for (const item of items) {
-        insertOrderItem(db, { orderId: id, body: { ...item, order_id: id }, allowPatch: true });
-      }
-      recalcOrderTotals(db, id, items.length > 0);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
-
-    res.status(201).json({ data: toOrderDto(db.prepare(`SELECT * FROM orders WHERE id = ?`).get(id)) });
+    validateOrderCreateBody(body, { nested: false });
+    res.status(201).json({ data: toOrderDto(createOrder({ restaurantId: body.restaurant_id, body })) });
   }),
 );
 
@@ -243,12 +286,15 @@ router.get(
 router.patch(
   '/:id',
   asyncHandler((req, res) => {
-    loadOrder(req.params.id);
+    const order = loadOrder(req.params.id);
     const body = assertBodyObject(req);
     rejectUnknownFields(body, ORDER_UPDATE_FIELDS);
     requireAtLeastOneField(body, ORDER_UPDATE_FIELDS);
     assertTypes(body, { status: 'string', customer_name: 'string', notes: 'text' });
     assertEnum(body, 'status', ORDER_STATUSES);
+    if (body.status !== undefined) {
+      assertStatusTransition(order.status, body.status);
+    }
 
     const data = { ...body };
     if (typeof data.customer_name === 'string') data.customer_name = data.customer_name.trim();
@@ -307,6 +353,15 @@ router.post(
     assertOrderItemBelongsToRestaurant(body.menu_item_id, order.restaurant_id);
 
     const db = getDb();
+    const duplicate = db
+      .prepare(`SELECT id FROM order_items WHERE order_id = ? AND menu_item_id = ?`)
+      .get(order.id, body.menu_item_id);
+    if (duplicate) {
+      throw ApiError.conflict(
+        'Order already contains this menu item. Patch the existing line\'s quantity instead.',
+      );
+    }
+
     db.exec('BEGIN');
     try {
       const row = insertOrderItem(db, { orderId: order.id, body: { ...body, order_id: order.id }, allowPatch: true });
@@ -354,7 +409,7 @@ router.patch(
       .get(req.params.itemId, req.params.orderId);
     if (!existing) throw ApiError.notFound('Order item not found');
 
-    const lineTotal = Number((Number(body.quantity) * Number(existing.unit_price)).toFixed(2));
+    const lineTotal = round2(Number(body.quantity) * Number(existing.unit_price));
     db.exec('BEGIN');
     try {
       db.prepare(`UPDATE order_items SET quantity = ?, line_total = ? WHERE id = ?`).run(

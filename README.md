@@ -109,6 +109,8 @@ Sortable: `name`, `cuisine`, `city`, `rating`, `price_range`, `created_at`, `upd
 Filters: `category`, `is_available`, `min_price`, `max_price`, `search`.
 
 #### `GET|POST /restaurants/:id/orders` (nested)
+`POST` creates an order scoped to that restaurant; sending `restaurant_id` in the
+body is rejected with `400`.
 
 #### `GET|POST /menu-items`, `GET|PATCH|DELETE /menu-items/:id`
 Filters: `restaurant_id`, `category`, `is_available`, `min_price`, `max_price`, `search`.
@@ -120,6 +122,34 @@ menu-item prices.
 
 #### `GET|POST /orders/:id/items`, `GET|PATCH|DELETE /orders/:id/items/:itemId`
 Filters: `menu_item_id`, `item_name`, `min_quantity`, `min_line_total`.
+
+### Order lines and totals
+
+A menu item may appear **at most once** on a given order:
+
+- `POST /orders` merges repeated `menu_item_id` entries in `items` into a single
+  line whose `quantity` is their sum.
+- `POST /orders/:id/items` returns `409 CONFLICT` when that menu item is already
+  on the order — patch the existing line's `quantity` instead.
+
+`subtotal`, `total`, `unit_price`, and `line_total` are rounded to 2 decimal
+places, so sums such as `0.1 + 0.2` are exposed as `0.3`, never as
+`0.30000000000000004`.
+
+### Order status transitions
+
+`PATCH /orders/:id` validates the requested status against a state machine and
+returns `409 CONFLICT` for an illegal transition. Setting a status to its current
+value is a no-op and always allowed.
+
+| From              | May become                       |
+| ----------------- | -------------------------------- |
+| `pending`         | `confirmed`, `cancelled`         |
+| `confirmed`       | `preparing`, `cancelled`         |
+| `preparing`       | `out_for_delivery`, `cancelled`  |
+| `out_for_delivery`| `delivered`, `cancelled`         |
+| `delivered`       | — (terminal)                     |
+| `cancelled`       | — (terminal)                     |
 
 ### Example
 
@@ -141,6 +171,8 @@ dropdown**, and a **"Next page"** pagination button, and shows
 npm test     # node --test
 ```
 
-19 tests cover envelopes, pagination, filtering, sorting, 400/404/409/422/429
+24 tests cover envelopes, pagination, filtering, sorting, 400/404/409/422/429
 status codes, nested resources, totals computation, `Retry-After`, and seed
-idempotency (running the seed twice produces identical counts).
+idempotency (running the seed twice produces identical counts). They also lock in
+money rounding, duplicate order-line merging, the order status state machine, and
+the nested `POST /restaurants/:id/orders` route.

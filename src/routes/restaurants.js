@@ -3,10 +3,12 @@ import { getDb } from '../db.js';
 import { ApiError } from '../errors.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { toMenuItemDto, insertMenuItem } from './menuItems.js';
+import { createOrder, validateOrderCreateBody, toOrderDto } from './orders.js';
 import {
   assertBodyObject,
   assertTypes,
   assertRanges,
+  assertEnum,
   rejectUnknownFields,
   requireFields,
   requireAtLeastOneField,
@@ -282,21 +284,21 @@ router.get(
       offset: q.offset,
     });
     res.json({
-      data: rows.map((row) => ({
-        id: row.id,
-        restaurant_id: row.restaurant_id,
-        customer_name: row.customer_name,
-        status: row.status,
-        subtotal: row.subtotal,
-        delivery_fee: row.delivery_fee,
-        total: row.total,
-        notes: row.notes,
-        placed_at: row.placed_at,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-      })),
+      data: rows.map(toOrderDto),
       meta: buildMeta({ total, limit: q.limit, offset: q.offset }),
     });
+  }),
+);
+
+router.post(
+  '/:id/orders',
+  asyncHandler((req, res) => {
+    const restaurant = loadRestaurant(req.params.id);
+    const body = assertBodyObject(req);
+    validateOrderCreateBody(body, { nested: true });
+    res
+      .status(201)
+      .json({ data: toOrderDto(createOrder({ restaurantId: restaurant.id, body })) });
   }),
 );
 

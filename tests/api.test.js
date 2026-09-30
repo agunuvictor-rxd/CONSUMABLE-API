@@ -43,6 +43,23 @@ async function api(route, options = {}) {
   return { status: res.status, body, headers: res.headers };
 }
 
+async function makeFixture(name, prices) {
+  const restaurant = await api('/api/v1/restaurants', {
+    method: 'POST',
+    body: JSON.stringify({ name, cuisine: 'Test', city: 'Berlin', country: 'Germany' }),
+  });
+  const restaurantId = restaurant.body.data.id;
+  const items = [];
+  for (const [itemName, price] of prices) {
+    const created = await api(`/api/v1/restaurants/${restaurantId}/menu-items`, {
+      method: 'POST',
+      body: JSON.stringify({ name: itemName, price, category: 'mains' }),
+    });
+    items.push(created.body.data);
+  }
+  return { restaurantId, items };
+}
+
 test('GET /api/v1/health returns success envelope', async () => {
   const { status, body } = await api('/api/v1/health');
   assert.equal(status, 200);
@@ -260,6 +277,153 @@ test('seed is idempotent (no duplicates on second run)', async () => {
     [result.restaurants, result.menuItems, result.orders, result.orderItems],
     beforeRun,
   );
+});
+
+test('order subtotal and total are rounded to 2 decimals', async () => {
+  const { restaurantId, items } = await makeFixture('Rounding Cafe', [
+    ['Tenth', 0.1],
+    ['Fifth', 0.2],
+  ]);
+
+  const order = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Float Probe',
+      items: [
+        { menu_item_id: items[0].id, quantity: 1 },
+        { menu_item_id: items[1].id, quantity: 1 },
+      ],
+    }),
+  });
+
+  assert.equal(order.status, 201);
+  assert.equal(order.body.data.subtotal, 0.3);
+  assert.equal(order.body.data.total, 3.79);
+});
+
+test('duplicate menu_item_id entries merge into one order line', async () => {
+  const { restaurantId, items } = await makeFixture('Merge Cafe', [['Standard Plate', 10]]);
+
+  const order = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Merge Probe',
+      items: [
+        { menu_item_id: items[0].id, quantity: 1 },
+        { menu_item_id: items[0].id, quantity: 2 },
+      ],
+    }),
+  });
+
+  assert.equal(order.status, 201);
+  assert.equal(order.body.data.subtotal, 30);
+
+  const lines = await api(`/api/v1/orders/${order.body.data.id}/items`);
+  assert.equal(lines.body.meta.total, 1);
+  assert.equal(lines.body.data[0].quantity, 3);
+  assert.equal(lines.body.data[0].line_total, 30);
+});
+
+test('POST order item returns 409 when the menu item is already on the order', async () => {
+  const { restaurantId, items } = await makeFixture('Dup Line Cafe', [['Only Plate', 5]]);
+
+  const order = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Dup Line Probe',
+      items: [{ menu_item_id: items[0].id, quantity: 1 }],
+    }),
+  });
+  assert.equal(order.status, 201);
+
+  const duplicate = await api(`/api/v1/orders/${order.body.data.id}/items`, {
+    method: 'POST',
+    body: JSON.stringify({ menu_item_id: items[0].id, quantity: 5 }),
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error.code, 'CONFLICT');
+
+  const lines = await api(`/api/v1/orders/${order.body.data.id}/items`);
+  assert.equal(lines.body.meta.total, 1);
+});
+
+test('order status transitions are enforced', async () => {
+  const { restaurantId, items } = await makeFixture('Transition Cafe', [['Soup', 4]]);
+
+  const order = await api('/api/v1/orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      restaurant_id: restaurantId,
+      customer_name: 'Transition Probe',
+      items: [{ menu_item_id: items[0].id, quantity: 1 }],
+    }),
+  });
+  const orderId = order.body.data.id;
+  assert.equal(order.body.data.status, 'pending');
+
+  const confirmed = await api(`/api/v1/orders/${orderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'confirmed' }),
+  });
+  assert.equal(confirmed.status, 200);
+
+  const sameStatus = await api(`/api/v1/orders/${orderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'confirmed' }),
+  });
+  assert.equal(sameStatus.status, 200);
+
+  const skippingAhead = await api(`/api/v1/orders/${orderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'delivered' }),
+  });
+  assert.equal(skippingAhead.status, 409);
+  assert.equal(skippingAhead.body.error.code, 'CONFLICT');
+
+  const cancelled = await api(`/api/v1/orders/${orderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'cancelled' }),
+  });
+  assert.equal(cancelled.status, 200);
+
+  const revived = await api(`/api/v1/orders/${orderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'out_for_delivery' }),
+  });
+  assert.equal(revived.status, 409);
+  assert.equal(revived.body.data ?? revived.body.error.code, 'CONFLICT');
+});
+
+test('nested POST /restaurants/:id/orders creates an order', async () => {
+  const { restaurantId, items } = await makeFixture('Nested Order Cafe', [['Nested Plate', 10]]);
+
+  const created = await api(`/api/v1/restaurants/${restaurantId}/orders`, {
+    method: 'POST',
+    body: JSON.stringify({
+      customer_name: 'Nested Probe',
+      items: [{ menu_item_id: items[0].id, quantity: 2 }],
+    }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.data.restaurant_id, restaurantId);
+  assert.equal(created.body.data.status, 'pending');
+  assert.equal(created.body.data.subtotal, 20);
+  assert.equal(created.body.data.total, 23.49);
+
+  const rejectsRestaurantId = await api(`/api/v1/restaurants/${restaurantId}/orders`, {
+    method: 'POST',
+    body: JSON.stringify({ restaurant_id: restaurantId, customer_name: 'Nested Probe' }),
+  });
+  assert.equal(rejectsRestaurantId.status, 400);
+
+  const missingName = await api(`/api/v1/restaurants/${restaurantId}/orders`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  assert.equal(missingName.status, 422);
 });
 
 test('rate limiting returns 429 with Retry-After', async () => {
