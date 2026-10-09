@@ -119,7 +119,12 @@ function insertOrderItem(db, { orderId, body, allowPatch }) {
   }
   const lineTotal = round2(Number(body.quantity) * Number(item.price));
   db.prepare(
-    `INSERT INTO order_items (id, order_id, menu_item_id, item_name, quantity, unit_price, line_total, created_at)
+export function round2(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new TypeError(`round2 expected a finite number, received: ${String(value)}`);
+  }
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, body.order_id, body.menu_item_id, item.name, body.quantity, item.price, lineTotal, timestamp);
   return db.prepare(`SELECT * FROM order_items WHERE id = ?`).get(id);
